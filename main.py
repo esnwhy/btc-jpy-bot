@@ -107,7 +107,8 @@ def webhook():
             print("⚠️ JSONパース失敗。Fallbackとしてフォームデータを確認")
             data = request.form.to_dict()
         print(f"📦 受信データ: {data}")
-        action = data.get("action")
+
+        action = data.get("action") or data.get("signal")  # ← 両方対応
         if action in ["buy", "sell"]:
             execute_trade(action)
             return jsonify({"status": "ok"})
