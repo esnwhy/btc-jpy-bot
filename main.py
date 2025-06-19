@@ -9,39 +9,33 @@ import hmac
 import hashlib
 from flask import Flask, request, jsonify
 
-# .envファイルから環境変数を読み込む
 load_dotenv()
 API_KEY = os.getenv("BITFLYER_API_KEY")
 API_SECRET = os.getenv("BITFLYER_API_SECRET")
 BASE_URL = "https://api.bitflyer.com"
-PRODUCT_CODE = "FX_BTC_JPY"  # レバレッジ取引用
-ORDER_SIZE_JPY = 1000  # 注文金額（円）
-LOSS_CUT_THRESHOLD = -200  # 含み損がこの値を下回ったらロスカット（円）
+PRODUCT_CODE = "FX_BTC_JPY"
+ORDER_SIZE_JPY = 1000
+LOSS_CUT_THRESHOLD = -200
 
-open_position = {"side": None, "size": 0, "price": 0}  # 現在のポジション
-
+open_position = {"side": None, "size": 0, "price": 0}
 app = Flask(__name__)
 
-# --- 価格取得 ---
 def get_current_price():
     try:
         res = requests.get(f"{BASE_URL}/v1/ticker", params={"product_code": PRODUCT_CODE})
         return res.json()["ltp"]
     except Exception as e:
         print(f"⚠️ 価格取得エラー: {e}")
-        return 8000000  # fallback価格
+        return 8000000
 
-# --- 署名作成 ---
 def create_signature(timestamp, method, path, body, secret):
     message = f"{timestamp}{method}{path}{body}"
     return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
-# --- 注文実行 ---
 def place_order(side, size):
     path = "/v1/me/sendchildorder"
     url = BASE_URL + path
     method = "POST"
-
     body_dict = {
         "product_code": PRODUCT_CODE,
         "child_order_type": "MARKET",
@@ -53,7 +47,6 @@ def place_order(side, size):
     body = json.dumps(body_dict)
     timestamp = str(int(time.time()))
     sign = create_signature(timestamp, method, path, body, API_SECRET)
-
     headers = {
         "ACCESS-KEY": API_KEY,
         "ACCESS-TIMESTAMP": timestamp,
@@ -71,7 +64,6 @@ def place_order(side, size):
     except Exception as e:
         print(f"⚠️ 通信エラー: {e}")
 
-# --- トレード実行 ---
 def execute_trade(action):
     global open_position
     price = get_current_price()
@@ -84,7 +76,6 @@ def execute_trade(action):
             place_order("BUY", open_position["size"])
         place_order("BUY", size)
         open_position = {"side": "BUY", "size": size, "price": price}
-
     elif action == "sell":
         print("🔴 sellアラート受信！")
         if open_position["side"] == "BUY":
@@ -93,7 +84,6 @@ def execute_trade(action):
         place_order("SELL", size)
         open_position = {"side": "SELL", "size": size, "price": price}
 
-# --- ロスカット監視スレッド ---
 def loss_cut_monitor():
     while True:
         if open_position["side"] and open_position["price"]:
@@ -101,7 +91,6 @@ def loss_cut_monitor():
             pnl = (current_price - open_position["price"]) * open_position["size"]
             if open_position["side"] == "SELL":
                 pnl = -pnl
-
             print(f"📉 ロスカット監視中... 含み損益: {int(pnl)}円")
             if pnl < LOSS_CUT_THRESHOLD:
                 print(f"💥 ロスカット実行！損失: {int(pnl)}円")
@@ -110,13 +99,14 @@ def loss_cut_monitor():
                 open_position.update({"side": None, "size": 0, "price": 0})
         time.sleep(30)
 
-# --- Webhook受信 ---
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(silent=True)
+        if not data:
+            print("⚠️ JSONパース失敗。Fallbackとしてフォームデータを確認")
+            data = request.form.to_dict()
         print(f"📦 受信データ: {data}")
-
         action = data.get("action")
         if action in ["buy", "sell"]:
             execute_trade(action)
@@ -124,10 +114,11 @@ def webhook():
         else:
             return jsonify({"status": "invalid action"}), 400
     except Exception as e:
-        print(f"❌ JSONエラー: {e}")
+        print(f"❌ Webhook処理中エラー: {e}")
+        print(f"🔍 request.data: {request.data}")
         return jsonify({"status": "error", "message": str(e)}), 400
 
-# --- 起動 ---
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
     threading.Thread(target=loss_cut_monitor, daemon=True).start()
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=port)
